@@ -137,6 +137,11 @@ def cmd_version(args):
     print("uiautomator2 version: %s" % __version__)
 
 
+def cmd_inspector(args):
+    from uiautomator2.webinspector import run_inspector
+    run_inspector(host=args.host, port=args.inspector_port)
+
+
 def cmd_console(args):
     import code
     import platform
@@ -236,6 +241,24 @@ _commands = [
     {"action": cmd_current, "command": "current", "help": "show current application"},
     {"action": cmd_doctor, "command": "doctor", "help": "detect connect problem"},
     {"action": cmd_console, "command": "console", "help": "launch interactive python console"},
+    {
+        "action": cmd_inspector,
+        "command": "inspector",
+        "help": "start web inspector",
+        "flags": [
+            {
+                "args": ["--host"],
+                "default": "127.0.0.1",
+                "help": "bind host",
+            },
+            {
+                "args": ["--inspector-port"],
+                "type": int,
+                "default": 18888,
+                "help": "web inspector port",
+            },
+        ],
+    },
     {
         "action": cmd_purge,
         "command": "purge",

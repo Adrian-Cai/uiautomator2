@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>uiautomator2 Web Inspector</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; overflow: hidden; }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  .toolbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+  .toolbar h1 { font-size: 16px; font-weight: 600; color: #e94560; }
+  .toolbar .info { font-size: 12px; color: #8899aa; }
+  .toolbar .info span { margin-right: 12px; }
+  .toolbar button { padding: 4px 12px; border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .toolbar button:hover { background: #0f3460; }
+  .toolbar button.active { background: #e94560; border-color: #e94560; color: #fff; }
+  .toolbar input[type="text"] { padding: 4px 8px; border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; border-radius: 4px; font-size: 12px; width: 160px; }
+  .main { display: flex; flex: 1; overflow: hidden; }
+  .panel-left { width: 380px; min-width: 380px; display: flex; flex-direction: column; border-right: 1px solid #0f3460; }
+  .panel-right { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .screenshot-container { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center; background: #0d0d1a; position: relative; }
+  .screenshot-container img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  #screenshot-overlay { position: absolute; pointer-events: none; }
+  #screenshot-overlay .highlight { position: absolute; border: 2px solid #e94560; background: rgba(233, 69, 96, 0.15); transition: all 0.15s; }
+  #element-detail { padding: 12px; background: #16213e; border-top: 1px solid #0f3460; font-size: 12px; max-height: 200px; overflow-y: auto; flex-shrink: 0; }
+  #element-detail .key { color: #8899aa; }
+  #element-detail .val { color: #4fc3f7; }
+  #element-detail .row { margin: 2px 0; }
+  #element-detail .empty { color: #556; font-style: italic; }
+  .tree-header { padding: 8px 12px; background: #16213e; border-bottom: 1px solid #0f3460; font-size: 12px; display: flex; justify-content: space-between; flex-shrink: 0; }
+  .tree-header .count { color: #8899aa; }
+  .tree-container { flex: 1; overflow-y: auto; padding: 4px 0; font-size: 12px; }
+  .tree-node { display: flex; align-items: center; padding: 2px 4px; cursor: pointer; white-space: nowrap; border-left: 2px solid transparent; }
+  .tree-node:hover { background: rgba(233, 69, 96, 0.1); }
+  .tree-node.selected { background: rgba(233, 69, 96, 0.2); border-left-color: #e94560; }
+  .tree-node .indent { display: inline-block; }
+  .tree-node .icon { margin-right: 4px; font-size: 10px; color: #8899aa; }
+  .tree-node .cls { color: #4fc3f7; }
+  .tree-node .txt { color: #81c784; margin-left: 4px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+  .tree-node .rid { color: #ffb74d; margin-left: 4px; font-size: 10px; }
+  .tree-node .matched { background: rgba(233, 69, 96, 0.3); border-radius: 2px; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #1a1a2e; }
+  ::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+  .loading { display: flex; align-items: center; justify-content: center; height: 100%; color: #556; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="toolbar">
+    <h1>🔍 Inspector</h1>
+    <div class="info">
+      <span id="device-info">-</span>
+      <span id="app-info">-</span>
+    </div>
+    <input type="text" id="search-input" placeholder="搜索 text/resource-id..." oninput="filterNodes(this.value)">
+    <button id="btn-refresh" onclick="refresh()">刷新</button>
+    <button id="btn-auto" onclick="toggleAuto()">自动刷新</button>
+  </div>
+  <div class="main">
+    <div class="panel-left">
+      <div class="tree-header">
+        <span>页面层级</span>
+        <span class="count" id="node-count">0</span>
+      </div>
+      <div class="tree-container" id="tree-container"></div>
+    </div>
+    <div class="panel-right">
+      <div class="screenshot-container" id="screenshot-container">
+        <img id="screenshot-img" src="" alt="screenshot">
+        <div id="screenshot-overlay"></div>
+      </div>
+      <div id="element-detail">
+        <div class="empty">点击左侧元素查看详情</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let state = { tree: null, flat: [], selected: null, autoRefresh: false, intervalId: null, filterText: "" };
+
+async function api(path) {
+  const r = await fetch(path);
+  return r.json();
+}
+
+function escapeHtml(s) {
+  if (!s) return "";
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function showDetail(node) {
+  const el = document.getElementById("element-detail");
+  if (!node) {
+    el.innerHTML = '<div class="empty">点击左侧元素查看详情</div>';
+    document.getElementById("screenshot-overlay").innerHTML = "";
+    return;
+  }
+  const d = node.data || node;
+  let html = "";
+  const fields = [
+    ["class", d["class"]],
+    ["text", d["text"]],
+    ["resource-id", d["resource-id"]],
+    ["content-desc", d["content-desc"]],
+    ["package", d["package"]],
+    ["bounds", d.bounds ? `[${d.bounds.x},${d.bounds.y}] [${d.bounds.width}x${d.bounds.height}]` : ""],
+    ["clickable", d.clickable],
+    ["enabled", d.enabled],
+    ["focusable", d.focusable],
+    ["scrollable", d.scrollable],
+    ["checkable", d.checkable],
+    ["checked", d.checked],
+    ["selected", d.selected],
+    ["displayed", d.displayed],
+    ["password", d.password],
+    ["child_count", d.child_count],
+  ];
+  for (const [k, v] of fields) {
+    if (v === false || v === "" || v === undefined) continue;
+    html += `<div class="row"><span class="key">${escapeHtml(k)}:</span> <span class="val">${escapeHtml(String(v))}</span></div>`;
+  }
+  el.innerHTML = html;
+
+  const bounds = d.bounds;
+  if (bounds && bounds.width > 0 && bounds.height > 0) {
+    const img = document.getElementById("screenshot-img");
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      const scaleX = img.clientWidth / img.naturalWidth;
+      const scaleY = img.clientHeight / img.naturalHeight;
+      const overlay = document.getElementById("screenshot-overlay");
+      overlay.innerHTML = `<div class="highlight" style="left:${bounds.x * scaleX}px;top:${bounds.y * scaleY}px;width:${bounds.width * scaleX}px;height:${bounds.height * scaleY}px;"></div>`;
+    }
+  }
+}
+
+function renderTree(flat, filterText) {
+  const container = document.getElementById("tree-container");
+  const count = document.getElementById("node-count");
+  if (!flat || flat.length === 0) {
+    container.innerHTML = '<div class="loading">无元素</div>';
+    count.textContent = "0";
+    return;
+  }
+
+  let visible = flat;
+  if (filterText) {
+    const ft = filterText.toLowerCase();
+    visible = flat.filter(n => {
+      const d = n.data;
+      return (d.text && d.text.toLowerCase().includes(ft)) ||
+             (d["resource-id"] && d["resource-id"].toLowerCase().includes(ft)) ||
+             (d["class"] && d["class"].toLowerCase().includes(ft)) ||
+             (d["content-desc"] && d["content-desc"].toLowerCase().includes(ft));
+    });
+  }
+
+  count.textContent = visible.length + (filterText ? `/${flat.length}` : "");
+
+  let html = "";
+  for (const node of visible) {
+    const d = node.data;
+    const indent = node.depth * 16;
+    const icon = d.clickable ? "🖱" : d.scrollable ? "📜" : d.text ? "📄" : "▸";
+    const cls = d["class"] ? d["class"].split(".").pop() : d.tag;
+    const txt = d.text ? `"${d.text.substring(0, 30)}"` : "";
+    const rid = d["resource-id"] ? d["resource-id"].split("/").pop() : "";
+    const sel = state.selected === d ? "selected" : "";
+    html += `<div class="tree-node ${sel}" onclick="selectNode(this, ${visible.indexOf(node)})" data-index="${visible.indexOf(node)}">`;
+    html += `<span class="indent" style="width:${indent}px"></span>`;
+    html += `<span class="icon">${icon}</span>`;
+    html += `<span class="cls">${escapeHtml(cls)}</span>`;
+    if (txt) html += `<span class="txt">${escapeHtml(txt)}</span>`;
+    if (rid) html += `<span class="rid">#${escapeHtml(rid)}</span>`;
+    html += "</div>";
+  }
+  container.innerHTML = html;
+}
+
+function selectNode(el, idx) {
+  document.querySelectorAll(".tree-node.selected").forEach(n => n.classList.remove("selected"));
+  el.classList.add("selected");
+  const visible = getVisibleFlat();
+  state.selected = visible[idx].data;
+  showDetail(state.selected);
+}
+
+function getVisibleFlat() {
+  const ft = state.filterText;
+  if (!ft) return state.flat;
+  return state.flat.filter(n => {
+    const d = n.data;
+    const lft = ft.toLowerCase();
+    return (d.text && d.text.toLowerCase().includes(lft)) ||
+           (d["resource-id"] && d["resource-id"].toLowerCase().includes(lft)) ||
+           (d["class"] && d["class"].toLowerCase().includes(lft)) ||
+           (d["content-desc"] && d["content-desc"].toLowerCase().includes(lft));
+  });
+}
+
+function filterNodes(text) {
+  state.filterText = text;
+  renderTree(state.flat, text);
+}
+
+async function refresh() {
+  try {
+    const btn = document.getElementById("btn-refresh");
+    btn.textContent = "刷新中...";
+    btn.disabled = true;
+
+    const data = await api("/api/refresh");
+    const info = data.info;
+    const current = data.current;
+    const hierarchy = data.hierarchy;
+
+    document.getElementById("device-info").textContent =
+      `${info.productName || "-"} | ${info.displayWidth}x${info.displayHeight} | SDK ${info.sdkInt}`;
+    document.getElementById("app-info").textContent =
+      `${current.package || "-"}: ${current.activity || "-"}`;
+
+    if (data.screenshot) {
+      document.getElementById("screenshot-img").src = "data:image/png;base64," + data.screenshot;
+    }
+
+    state.tree = hierarchy.tree;
+    state.flat = hierarchy.flat || [];
+    renderTree(state.flat, state.filterText);
+  } catch (e) {
+    console.error("Refresh failed:", e);
+  } finally {
+    const btn = document.getElementById("btn-refresh");
+    btn.textContent = "刷新";
+    btn.disabled = false;
+  }
+}
+
+function toggleAuto() {
+  const btn = document.getElementById("btn-auto");
+  state.autoRefresh = !state.autoRefresh;
+  if (state.autoRefresh) {
+    btn.classList.add("active");
+    btn.textContent = "自动刷新中";
+    state.intervalId = setInterval(refresh, 2000);
+  } else {
+    btn.classList.remove("active");
+    btn.textContent = "自动刷新";
+    if (state.intervalId) {
+      clearInterval(state.intervalId);
+      state.intervalId = null;
+    }
+  }
+}
+
+refresh();
+</script>
+</body>
+</html>
